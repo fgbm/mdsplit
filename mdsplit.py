@@ -27,14 +27,16 @@ Limitations:
   (underlined headings) are not recognised.
 """
 
-from abc import ABC, abstractmethod
-from collections import namedtuple
-from dataclasses import dataclass
-from pathlib import Path
 import argparse
 import os
 import re
 import sys
+from abc import ABC, abstractmethod
+from collections import namedtuple
+from dataclasses import dataclass
+from pathlib import Path
+
+from slugify import slugify
 
 FENCES = ["```", "~~~"]
 MAX_HEADING_LEVEL = 6
@@ -44,13 +46,25 @@ Chapter = namedtuple("Chapter", "parent_headings, heading, text")
 
 
 class Splitter(ABC):
-    def __init__(self, encoding, level, toc, navigation, force, verbose):
+    def __init__(
+        self,
+        encoding,
+        level,
+        toc,
+        navigation,
+        force,
+        verbose,
+        use_slugify=True,
+        max_length=50,
+    ):
         self.encoding = encoding
         self.level = level
         self.toc = toc
         self.navigation = navigation
         self.force = force
         self.verbose = verbose
+        self.use_slugify = use_slugify
+        self.max_length = max_length
         self.stats = Stats()
 
     @abstractmethod
@@ -74,13 +88,18 @@ class Splitter(ABC):
             self.stats.chapters += 1
             chapter_dir = out_path
             for parent in chapter.parent_headings:
-                chapter_dir = chapter_dir / get_valid_filename(parent)
+                chapter_dir = chapter_dir / get_valid_filename(
+                    parent, self.use_slugify, self.max_length
+                )
             chapter_dir.mkdir(parents=True, exist_ok=True)
 
             chapter_filename = (
                 fallback_out_file_name
                 if chapter.heading is None
-                else get_valid_filename(chapter.heading.heading_title) + ".md"
+                else get_valid_filename(
+                    chapter.heading.heading_title, self.use_slugify, self.max_length
+                )
+                + ".md"
             )
             chapter_path = chapter_dir / chapter_filename
 
@@ -107,16 +126,22 @@ class Splitter(ABC):
         if self.navigation:
             nav_chapter_paths = list(nav_chapter_path2title)
             for i, chapter_path in enumerate(nav_chapter_paths):
-                with open(out_path / chapter_path, mode="a", encoding=self.encoding) as file:
+                with open(
+                    out_path / chapter_path, mode="a", encoding=self.encoding
+                ) as file:
                     nav = []
                     if self.toc:
-                        nav.append(f"[🡅](./toc.md)")
+                        nav.append("[🡅](./toc.md)")
                     if i > 0:
                         prev_path = nav_chapter_paths[i - 1]
-                        nav.append(f"[🡄 {nav_chapter_path2title[prev_path]}](./{prev_path})")
+                        nav.append(
+                            f"[🡄 {nav_chapter_path2title[prev_path]}](./{prev_path})"
+                        )
                     if i < len(nav_chapter_path2title) - 1:
                         next_path = nav_chapter_paths[i + 1]
-                        nav.append(f"[{nav_chapter_path2title[next_path]} 🡆](./{next_path})")
+                        nav.append(
+                            f"[{nav_chapter_path2title[next_path]} 🡆](./{next_path})"
+                        )
                     file.write("\n\n---\n\n")
                     file.write(" ·•⦁•· ".join(nav))
 
@@ -137,14 +162,31 @@ class Splitter(ABC):
 class StdinSplitter(Splitter):
     """Split content from stdin"""
 
-    def __init__(self, encoding, level, toc, navigation, out_path, force, verbose):
-        super().__init__(encoding, level, toc, navigation, force, verbose)
+    def __init__(
+        self,
+        encoding,
+        level,
+        toc,
+        navigation,
+        out_path,
+        force,
+        verbose,
+        use_slugify=True,
+        max_length=50,
+    ):
+        super().__init__(
+            encoding, level, toc, navigation, force, verbose, use_slugify, max_length
+        )
         self.out_path = Path(DIR_SUFFIX) if out_path is None else Path(out_path)
         if self.out_path.exists():
             if self.force:
-                print(f"Warning: writing output to existing directory '{self.out_path}'")
+                print(
+                    f"Warning: writing output to existing directory '{self.out_path}'"
+                )
             else:
-                raise MdSplitError(f"Output directory '{self.out_path}' already exists. Exiting..")
+                raise MdSplitError(
+                    f"Output directory '{self.out_path}' already exists. Exiting.."
+                )
 
     def process(self):
         self.process_stream(sys.stdin, "stdin.md", self.out_path)
@@ -158,22 +200,46 @@ class StdinSplitter(Splitter):
 class PathBasedSplitter(Splitter):
     """Split a specific file or all .md files found in a directory (recursively)"""
 
-    def __init__(self, in_path, encoding, level, toc, navigation, out_path, force, verbose):
-        super().__init__(encoding, level, toc, navigation, force, verbose)
+    def __init__(
+        self,
+        in_path,
+        encoding,
+        level,
+        toc,
+        navigation,
+        out_path,
+        force,
+        verbose,
+        use_slugify=True,
+        max_length=50,
+    ):
+        super().__init__(
+            encoding, level, toc, navigation, force, verbose, use_slugify, max_length
+        )
         self.in_path = Path(in_path)
         if not self.in_path.exists():
-            raise MdSplitError(f"Input file/directory '{self.in_path}' does not exist. Exiting..")
+            raise MdSplitError(
+                f"Input file/directory '{self.in_path}' does not exist. Exiting.."
+            )
         elif self.in_path.is_file():
-            self.out_path = Path(self.in_path.stem) if out_path is None else Path(out_path)
+            self.out_path = (
+                Path(self.in_path.stem) if out_path is None else Path(out_path)
+            )
         else:
             self.out_path = (
-                Path(self.in_path.stem + DIR_SUFFIX) if out_path is None else Path(out_path)
+                Path(self.in_path.stem + DIR_SUFFIX)
+                if out_path is None
+                else Path(out_path)
             )
         if self.out_path.exists():
             if force:
-                print(f"Warning: writing output to existing directory '{self.out_path}'")
+                print(
+                    f"Warning: writing output to existing directory '{self.out_path}'"
+                )
             else:
-                raise MdSplitError(f"Output directory '{self.out_path}' already exists. Exiting..")
+                raise MdSplitError(
+                    f"Output directory '{self.out_path}' already exists. Exiting.."
+                )
 
     def process(self):
         if self.in_path.is_file():
@@ -188,7 +254,9 @@ class PathBasedSplitter(Splitter):
                     continue
                 file_path = Path(dir_path) / file_name
                 new_out_path = (
-                    out_path / os.path.relpath(dir_path, in_dir_path) / Path(file_name).stem
+                    out_path
+                    / os.path.relpath(dir_path, in_dir_path)
+                    / Path(file_name).stem
                 )
                 self.process_file(file_path, new_out_path)
 
@@ -221,7 +289,9 @@ def split_by_heading(text, max_level):
             within_fence = not within_fence
 
         is_chapter_finished = (
-            not within_fence and next_line.is_heading() and next_line.heading_level <= max_level
+            not within_fence
+            and next_line.is_heading()
+            and next_line.heading_level <= max_level
         )
         if is_chapter_finished:
             if len(curr_lines) > 0:
@@ -230,7 +300,9 @@ def split_by_heading(text, max_level):
 
                 if curr_heading_line is not None:
                     curr_level = curr_heading_line.heading_level
-                    curr_parent_headings[curr_level - 1] = curr_heading_line.heading_title
+                    curr_parent_headings[curr_level - 1] = (
+                        curr_heading_line.heading_title
+                    )
                     for level in range(curr_level, MAX_HEADING_LEVEL):
                         curr_parent_headings[level] = None
 
@@ -302,12 +374,25 @@ class Stats:
     chapters: int = 0
 
 
-def get_valid_filename(name):
+def get_valid_filename(name, use_slugify=True, max_length=50):
     """
-    Adapted from https://github.com/django/django/blob/main/django/utils/text.py
+    Create a valid filename from a string.
+    If use_slugify is True, uses python-slugify for better Unicode support.
+    Otherwise uses a simpler method adapted from Django.
+
+    Args:
+        name: The string to convert to a valid filename
+        use_slugify: Whether to use python-slugify (default: True)
+        max_length: Maximum length of the resulting filename (default: 50)
     """
-    s = str(name).strip().replace(" ", "-")
-    s = re.sub(r"(?u)[^-\w.]", "", s)
+    if use_slugify:
+        s = slugify(name, lowercase=True, separator="-", max_length=max_length)
+    else:
+        s = str(name).strip().replace(" ", "-")
+        s = re.sub(r"(?u)[^-\w.]", "", s)
+        if len(s) > max_length:
+            s = s[:max_length]
+
     if s in {"", ".", ".."}:
         raise ValueError(f"Could not derive file name from '{name}'")
     return s
@@ -360,6 +445,17 @@ def main():
         action="store_true",
         help="write into output folder even if it already exists",
     )
+    parser.add_argument(
+        "--no-slugify",
+        action="store_true",
+        help="use simple filename sanitization instead of python-slugify",
+    )
+    parser.add_argument(
+        "--max-length",
+        type=int,
+        default=50,
+        help="maximum length of generated filenames (default: 50)",
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     args = parser.parse_args()
 
@@ -372,6 +468,8 @@ def main():
             "out_path": args.output,
             "force": args.force,
             "verbose": args.verbose,
+            "use_slugify": not args.no_slugify,
+            "max_length": args.max_length,
         }
         splitter = (
             StdinSplitter(**splitter_args)
